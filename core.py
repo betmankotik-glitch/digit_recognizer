@@ -1,25 +1,30 @@
 import os
 import numpy as np
-from tensorflow.keras.layers import Dense, Flatten, Input
+from PIL import Image, ImageOps
+from tensorflow.keras.layers import Dense, Flatten
 from tensorflow.keras.models import load_model, Sequential
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.datasets import mnist as tf_mnist
 
 # ГЛОБАЛЬНІ ЗМІННІ
 MODEL_PATH = "model.h5"
-mode = "train"  # train, predict
+mode = "train" # train, predict
 
 # СТВОРЕННЯ АБО ЗАВАНТАЖЕННЯ МОДЕЛІ
 if os.path.exists(MODEL_PATH):
     mode = "predict"
-    print("Loading existing model...")
+    print("Loading exists model...")
     model = load_model(MODEL_PATH)
+    # Перекомпілюємо модель, щоб уникнути конфлікту оптимізатора
+    model.compile(
+        optimizer=Adam(learning_rate=0.001),
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"],
+    )
 else:
     mode = "train"
     print("Creating new model...")
     model = Sequential([
-        Input(shape=(784,)),
-        Dense(128, activation="relu"),
+        Dense(128, input_shape=(784,), activation="relu"),
         Dense(256, activation="relu"),
         Dense(10, activation="softmax"),
     ])
@@ -29,81 +34,109 @@ else:
         metrics=["accuracy"],
     )
 
-
-def preprocess_image(img):
-    """Конвертація зображення PIL у нормалізований масив numpy розміром (1, 784)"""
-    # Інвертуємо кольори, якщо потрібно ( MNIST має білі цифри на чорному тлі або навпаки,
-    # залежно від того, як ви малюєте. Тут налаштовано під чорне на білому).
-    arr = np.array(img).astype("float32") / 255.0
-    # Згладжуємо у вектор з 784 елементів
-    arr = arr.reshape(1, 784)
-    return arr
+# Змінні для навчальних даних і підписів, зібраних через інтерфейс
+train_images = []
+train_labels = []
 
 
-def predict(img):
-    """Розпізнавання намальованої цифри"""
-    global model
-    processed_img = preprocess_image(img)
-    prediction = model.predict(processed_img)
-    predicted_digit = np.argmax(prediction)
-    print(f"Predicted digit: {predicted_digit}")
-    return int(predicted_digit)
+def train(img, number_value, train_count):
+    global train_images, train_labels
 
+    img_inverted = ImageOps.invert(img)
+    img_array = np.array(img_inverted, dtype=np.float32) / 255.0
+    img_flattened = img_array.reshape(784)
 
-# Будемо збирати дані для донавчання в пам'яті
-train_images_buffer = []
-train_labels_buffer = []
+    train_images.append(img_flattened)
+    train_labels.append(number_value)
 
+    if len(train_images) >= train_count:
+        x_train = np.array(train_images)
+        y_train = np.array(train_labels)
 
-def train(img, label_value, train_count):
-    """Додавання зображення у буфер та навчання, коли набереться достатньо даних"""
-    global train_images_buffer, train_labels_buffer, model
-
-    processed_img = np.array(img).astype("float32") / 255.0
-    train_images_buffer.append(processed_img.reshape(784))
-    train_labels_buffer.append(label_value)
-
-    print(f"Collected {len(train_images_buffer)}/{train_count} samples.")
-
-    if len(train_images_buffer) >= train_count:
-        X_train = np.array(train_images_buffer)
-        y_train = np.array(train_labels_buffer)
-
-        print("Training model with user data...")
-        model.fit(X_train, y_train, epochs=5, batch_size=len(X_train), verbose=1)
-
-        # Збереження моделі
+        model.fit(x_train, y_train, epochs=5, batch_size=32, verbose=1)
         model.save(MODEL_PATH)
-        print("Model saved successfully!")
 
-        # Очищення буфера
-        train_images_buffer.clear()
-        train_labels_buffer.clear()
+        train_images.clear()
+        train_labels.clear()
         return True
 
     return False
 
 
+def predict(img):
+    img_inverted = ImageOps.invert(img)
+    img_array = np.array(img_inverted, dtype=np.float32) / 255.0
+    img_flattened = img_array.reshape(1, 784)
+
+    prediction = model.predict(img_flattened)
+    return int(np.argmax(prediction))
+
+
 def mnist():
-    """Навчання моделі на стандартному датасеті MNIST"""
     global model, mode
-    print("Loading MNIST dataset...")
-    (x_train, y_train), (x_test, y_test) = tf_mnist.load_data()
+    images = []
+    labels = []
 
-    # Нормалізація та випрямлення
-    x_train = x_train.reshape(-1, 784).astype("float32") / 255.0
-    x_test = x_test.reshape(-1, 784).astype("float32") / 255.0
+    train_dir = "mnist/train"
+    if not os.path.exists(train_dir):
+        print(f"Папка {train_dir} не знайдена!")
+        return
 
-    # ПЕРЕКОМПІЛЯЦІЯ МОДЕЛІ (вирішує проблему з Unknown variable)
-    model.compile(
-        optimizer=Adam(learning_rate=0.001),
-        loss="sparse_categorical_crossentropy",
-        metrics=["accuracy"],
-    )
+    print("Завантаження даних MNIST для тренування...")
+    for img_name in os.listdir(train_dir):
+        if img_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+            img_path = os.path.join(train_dir, img_name)
+            try:
+                label = int(img_name[0])
+                img = Image.open(img_path).convert("L").resize((28, 28))
+                img_array = np.array(img, dtype=np.float32) / 255.0
+                images.append(img_array.reshape(784))
+                labels.append(label)
+            except Exception:
+                pass
 
-    print("Training on MNIST dataset (this may take a minute)...")
-    model.fit(x_train, y_train, epochs=3, batch_size=64, validation_data=(x_test, y_test))
+    if len(images) > 0:
+        x_train = np.array(images)
+        y_train = np.array(labels)
 
-    model.save(MODEL_PATH)
-    mode = "predict"
-    print("MNIST training finished and model saved!")
+        print("Розпочато навчання моделі на датасеті MNIST...")
+        model.fit(x_train, y_train, epochs=5, batch_size=64, validation_split=0.1)
+        model.save(MODEL_PATH)
+        mode = "predict"
+        print("Модель успішно навчена на MNIST та збережена у model.h5 ✅")
+    else:
+        print("Помилка: не знайдено зображень у папці mnist/train.")
+
+
+def predict_mnist():
+    test_dir = "mnist/test"
+    if not os.path.exists(test_dir):
+        print(f"Папка {test_dir} не знайдена!")
+        return
+
+    images = []
+    labels = []
+
+    print("Завантаження тестових даних MNIST...")
+    for img_name in os.listdir(test_dir):
+        if img_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+            img_path = os.path.join(test_dir, img_name)
+            try:
+                label = int(img_name[0])
+                img = Image.open(img_path).convert("L").resize((28, 28))
+                img_array = np.array(img, dtype=np.float32) / 255.0
+                images.append(img_array.reshape(784))
+                labels.append(label)
+            except Exception:
+                pass
+
+    if len(images) > 0:
+        x_test = np.array(images)
+        y_test = np.array(labels)
+
+        loss, accuracy = model.evaluate(x_test, y_test, verbose=0)
+        print(f"\n--- Результати тестування MNIST ---")
+        print(f"Точність (Accuracy): {accuracy * 100:.2f}%")
+        print(f"Втрати (Loss): {loss:.4f}")
+    else:
+        print("Помилка: не знайдено тестових зображень у папці mnist/test.")
